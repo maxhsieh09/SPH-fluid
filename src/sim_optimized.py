@@ -351,12 +351,22 @@ class SPH2D:
     def step(self):
         dt = self.dt
 
+        x0 = self.positions.copy()
+        v0 = self.velocities.copy()
+
+        # Beginning-of-step acceleration
         a0 = self.compute_accelerations()
-        self.velocities += 0.5 * dt * a0
-        self.positions += dt * self.velocities
+
+        # Predict next positions and velocities
+        self.positions = x0 + dt*v0 + 0.5*dt*dt*a0
+        self.velocities = v0 + dt*a0
+
         self.resolve_collisions()
 
+        # Evaluate forces using predicted end-of-step state
         a1 = self.compute_accelerations()
-        self.velocities += 0.5 * dt * a1
-        #self.apply_xsph(epsilon=0.1)
+
+        # Correct velocity
+        self.velocities = v0 + 0.5*dt*(a0 + a1)
+
         self.resolve_collisions()
