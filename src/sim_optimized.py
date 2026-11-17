@@ -23,7 +23,7 @@ def compute_density_numba(
     positions, pairs, n_fluid, h
 ):
     # Fluid densities, including the self contribution
-    rho = np.full(n_fluid, cubic_kernel(0.0, h))
+    rho = np.full(n_fluid, cubic_kernel(0.0, h), dtype=np.float32)
 
     for k in range(len(pairs)):
         i, j = pairs[k]
@@ -50,7 +50,7 @@ def compute_forces_numba(
     rho, pressure, n_fluid,
     h, rho0, stiffness, alpha=0.1
 ):
-    acc = np.zeros((n_fluid, 2))
+    acc = np.zeros((n_fluid, 2), dtype=np.float32)
 
     # Spiky kernel derivative factor (2D)
     factor = 10.0 / (np.pi * h**5)
@@ -130,14 +130,14 @@ class SPH2D:
         self.dt = dt
         self.stiffness = stiffness
         self.viscosity = viscosity
-        self.bounds = np.array([1., 0.7])
+        self.bounds = np.array([1., 0.7], dtype=np.float32)
         self.reflectivity = 0
         self.gravity = 9.8
 
-        self.positions = np.zeros((0, 2))
-        self.velocities = np.zeros((0, 2))
-        self.densities = np.zeros(0)
-        self.pressures = np.zeros(0)
+        self.positions = np.zeros((0, 2), dtype=np.float32)
+        self.velocities = np.zeros((0, 2), dtype=np.float32)
+        self.densities = np.zeros(0, dtype=np.float32)
+        self.pressures = np.zeros(0, dtype=np.float32)
 
         self.grid_size = self.kernel_radius
         self.cell_to_indices = {}
@@ -145,8 +145,12 @@ class SPH2D:
         self.create_boundary_particles()
 
     def add_particle(self, x, v=None):
+        x = np.asarray(x, dtype=np.float32)
         if v is None:
-            v = np.zeros(2)
+            v = np.zeros(2, dtype=np.float32)
+        else:
+            v = np.asarray(v, dtype=np.float32)
+        
         self.positions = np.vstack((self.positions, x))
         self.velocities = np.vstack((self.velocities, v))
         self.densities = np.append(self.densities, self.target_density)
@@ -178,7 +182,7 @@ class SPH2D:
                 wall.append([x, height - d])
 
         # Remove duplicate corner samples
-        self.boundary_positions = np.unique(np.round(np.array(wall), 10), axis=0)
+        self.boundary_positions = np.unique(np.round(np.array(wall, dtype=np.float32), 10), axis=0)
 
     def pos_to_cell(self, pos):
         return tuple(np.astype(pos // self.grid_size, int).tolist())
@@ -258,48 +262,6 @@ class SPH2D:
 
         self.velocities[:] = new_velocities
 
-    def artificial_viscosity(self, idx, alpha=0.1):
-        neighbors = np.asarray(self.neighbor_indices(idx), dtype=int)
-
-        # Only include moving fluid particles initially
-        neighbors = neighbors[neighbors < len(self.positions)]
-
-        if len(neighbors) == 0:
-            return np.zeros(2)
-
-        # r_ij = x_i - x_j
-        rij = self.positions[idx] - self.positions[neighbors]
-
-        # v_ij = v_i - v_j
-        vij = self.velocities[idx] - self.velocities[neighbors]
-
-        r2 = np.sum(rij**2, axis=1)
-        r = np.sqrt(r2)
-
-        dot = np.sum(vij * rij, axis=1)
-
-        h = self.kernel_radius
-        c = np.sqrt(self.stiffness)
-
-        rho_avg = 0.5 * (self.densities[idx] + self.densities[neighbors])
-
-        mu = h * dot / (r2 + 0.01 * h**2)
-
-        # Only damp approaching particles
-        pi_ij = np.where(
-            dot < 0,
-            -alpha * c * mu / np.maximum(rho_avg, SMALL_NUMBER),
-            0.0
-        )
-
-        # Kernel gradient with respect to x_i
-        slope = self.spiky_kernel.get_derivative(r, h)
-
-        grad = slope[:, None] * rij / np.maximum(r[:, None], SMALL_NUMBER)
-
-        # Your original solver implicitly uses particle mass = 1
-        return -np.sum(pi_ij[:, None] * grad, axis=0)
-
     def resolve_collisions(self):
         self.positions[:, 0] = np.clip(self.positions[:, 0], 0, self.bounds[0])
         self.positions[:, 1] = np.clip(self.positions[:, 1], 0, self.bounds[1])
@@ -359,13 +321,15 @@ class SPH2D:
 
         self.pressures = self.stiffness * np.maximum(self.densities - self.target_density, 0.0)
 
+        h = np.float32(self.kernel_radius)
+        rho0 = np.float32(self.target_density)
+        stiffness = np.float32(self.stiffness)
+        alpha = np.float32(self.viscosity)
+
         acc = compute_forces_numba(
             all_positions, all_velocities, pairs,
             self.densities, self.pressures,
-            n, self.kernel_radius,
-            self.target_density,
-            self.stiffness,
-            alpha=self.viscosity
+            n, h, rho0, stiffness, alpha
         )
 
         acc[:, 1] += self.gravity
