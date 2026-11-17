@@ -309,6 +309,30 @@ class SPH2D:
         self.velocities[self.positions[:, 1] <= 0, 1] *= -self.reflectivity
         self.velocities[self.positions[:, 1] >= self.bounds[1], 1] *= -self.reflectivity
 
+    def apply_wall_friction(self):
+        margin = self.kernel_radius
+        dt = self.dt
+        gamma = 100.0
+
+        x = self.positions[:, 0]
+        y = self.positions[:, 1]
+
+        near_vertical = (
+            (x < margin) |
+            (x > self.bounds[0] - margin)
+        )
+
+        near_horizontal = (
+            (y < margin) |
+            (y > self.bounds[1] - margin)
+        )
+
+        # Dampen tangential velocities
+        factor = np.exp(-gamma * dt)
+
+        self.velocities[near_vertical, 1] *= factor
+        self.velocities[near_horizontal, 0] *= factor
+
     def compute_accelerations(self):
         n = len(self.positions)
 
@@ -370,4 +394,5 @@ class SPH2D:
         # Correct velocity
         self.velocities = v0 + 0.5*dt*(a0 + a1)
 
+        #self.apply_wall_friction()
         self.resolve_collisions()
