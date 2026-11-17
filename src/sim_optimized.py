@@ -48,7 +48,7 @@ def compute_density_numba(
 def compute_forces_numba(
     positions, velocities, pairs,
     rho, pressure, n_fluid,
-    h, rho0, stiffness, alpha=0.1
+    h, rho0, stiffness, alpha=0.1, wall_viscosity=0.01
 ):
     acc = np.zeros((n_fluid, 2), dtype=np.float32)
 
@@ -70,12 +70,10 @@ def compute_forces_numba(
         dy = positions[j, 1] - positions[i, 1]
 
         r2 = dx*dx + dy*dy
-
         if r2 < 1e-12 or r2 >= h*h:
             continue
 
         r = np.sqrt(r2)
-
         slope = -3.0 * factor * (h-r)**2
 
         i_fluid = i < n_fluid
@@ -96,7 +94,6 @@ def compute_forces_numba(
                 mu = h * dot / (r2 + 0.01*h*h)
 
                 pi_ij = -alpha * c * mu / max(rho_avg, 1e-6)
-
                 term += pi_ij
 
         elif i_fluid:
@@ -119,17 +116,46 @@ def compute_forces_numba(
             acc[j, 0] -= ax
             acc[j, 1] -= ay
 
+        # Boundary viscosity: apply drag only to fluid particles
+        # interacting with stationary boundary particles.
+        if i_fluid != j_fluid:
+            fluid_idx = i if i_fluid else j
+
+            # Boundary particle velocity = 0
+            dvx = -velocities[fluid_idx, 0]
+            dvy = -velocities[fluid_idx, 1]
+
+            # Use cubic kernel radial derivative for viscosity
+            q = 2.0 * r / h
+            cubic_factor = 40.0 / (7.0 * np.pi * h**3)
+
+            if q > 1.0:
+                dwdr = cubic_factor * (-0.75 * (2.0 - q)**2)
+            else:
+                dwdr = cubic_factor * (-3.0*q + 2.25*q*q)
+
+            # Positive diffusion weight
+            weight = -dwdr * r / (r2 + 0.01*h*h)
+
+            # Simple ghost-particle wall drag
+            coeff = 2.0 * wall_viscosity * weight / rho0
+
+            acc[fluid_idx, 0] += coeff * dvx
+            acc[fluid_idx, 1] += coeff * dvy
+
+
     return acc
 
 
 class SPH2D:
-    def __init__(self, particle_spacing=0.008, smooth_factor=2, dt=0.002, stiffness=20, viscosity=0.2):
+    def __init__(self, particle_spacing=0.008, smooth_factor=2, dt=0.002, stiffness=20, viscosity=0.2, wall_viscosity=0.01):
         self.particle_spacing = particle_spacing
         self.kernel_radius = particle_spacing * smooth_factor
         self.target_density = (1 / self.particle_spacing) ** 2
         self.dt = dt
         self.stiffness = stiffness
         self.viscosity = viscosity
+        self.wall_viscosity = wall_viscosity
         self.bounds = np.array([1., 0.7], dtype=np.float32)
         self.reflectivity = 0
         self.gravity = 9.8
@@ -156,7 +182,7 @@ class SPH2D:
         self.densities = np.append(self.densities, self.target_density)
         self.pressures = np.append(self.pressures, 0)
 
-        self.update_grid()
+        #self.update_grid()
 
     def create_boundary_particles(self):
         dx = self.particle_spacing
@@ -224,44 +250,6 @@ class SPH2D:
             dist = np.linalg.norm(self.all_positions[neighbors] - self.positions[i], axis=1)
             self.densities[i] = np.sum(self.kernel.get(dist, self.kernel_radius))
 
-    def apply_xsph(self, epsilon=0.05):
-        n = len(self.positions)
-
-        # Boundary particles have zero velocity
-        all_velocities = np.vstack((
-            self.velocities,
-            np.zeros_like(self.boundary_positions)
-        ))
-
-        new_velocities = self.velocities.copy()
-
-        for i in range(n):
-            neighbors = np.asarray(self.neighbor_indices(i), dtype=int)
-
-            if len(neighbors) == 0:
-                continue
-
-            delta = (self.all_positions[neighbors] - self.positions[i])
-
-            dist = np.linalg.norm(delta, axis=1)
-            weights = self.kernel.get(dist, self.kernel_radius)
-
-            rho_j = np.full(len(neighbors), self.target_density)
-
-            fluid_mask = neighbors < n
-            rho_j[fluid_mask] = self.densities[neighbors[fluid_mask]]
-
-            velocity_diff = (all_velocities[neighbors] - self.velocities[i])
-
-            correction = np.sum(
-                (weights / np.maximum(rho_j, SMALL_NUMBER))[:, None] * velocity_diff,
-                axis=0
-            )
-
-            new_velocities[i] += epsilon * correction
-
-        self.velocities[:] = new_velocities
-
     def resolve_collisions(self):
         self.positions[:, 0] = np.clip(self.positions[:, 0], 0, self.bounds[0])
         self.positions[:, 1] = np.clip(self.positions[:, 1], 0, self.bounds[1])
@@ -279,15 +267,9 @@ class SPH2D:
         x = self.positions[:, 0]
         y = self.positions[:, 1]
 
-        near_vertical = (
-            (x < margin) |
-            (x > self.bounds[0] - margin)
-        )
+        near_vertical = (x < margin) | (x > self.bounds[0] - margin)
 
-        near_horizontal = (
-            (y < margin) |
-            (y > self.bounds[1] - margin)
-        )
+        near_horizontal = (y < margin) | (y > self.bounds[1] - margin)
 
         # Dampen tangential velocities
         factor = np.exp(-gamma * dt)
@@ -320,16 +302,18 @@ class SPH2D:
         )
 
         self.pressures = self.stiffness * np.maximum(self.densities - self.target_density, 0.0)
+        #self.pressures = self.stiffness * (self.densities - self.target_density)
 
         h = np.float32(self.kernel_radius)
         rho0 = np.float32(self.target_density)
         stiffness = np.float32(self.stiffness)
         alpha = np.float32(self.viscosity)
+        wall_viscosity = np.float32(self.wall_viscosity)
 
         acc = compute_forces_numba(
             all_positions, all_velocities, pairs,
             self.densities, self.pressures,
-            n, h, rho0, stiffness, alpha
+            n, h, rho0, stiffness, alpha, wall_viscosity
         )
 
         acc[:, 1] += self.gravity
