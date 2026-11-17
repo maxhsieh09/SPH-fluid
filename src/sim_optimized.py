@@ -123,12 +123,13 @@ def compute_forces_numba(
 
 
 class SPH2D:
-    def __init__(self, particle_spacing=0.008, smooth_factor=2, dt=0.002, stiffness=20):
+    def __init__(self, particle_spacing=0.008, smooth_factor=2, dt=0.002, stiffness=20, viscosity=0.2):
         self.particle_spacing = particle_spacing
         self.kernel_radius = particle_spacing * smooth_factor
         self.target_density = (1 / self.particle_spacing) ** 2
         self.dt = dt
         self.stiffness = stiffness
+        self.viscosity = viscosity
         self.bounds = np.array([1., 0.7])
         self.reflectivity = 0
         self.gravity = 9.8
@@ -340,7 +341,7 @@ class SPH2D:
             n, self.kernel_radius,
             self.target_density,
             self.stiffness,
-            alpha=0.2
+            alpha=self.viscosity
         )
 
         acc[:, 1] += self.gravity
