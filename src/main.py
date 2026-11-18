@@ -9,7 +9,7 @@ pygame.init()
 
 outline_color = (10, 100, 200)
 RED = np.array((250, 10, 0))
-BLUE = np.array((10, 100, 250))
+BLUE = np.array((82, 165, 255))
 NEUTRAL = np.array((50, 50, 50))
 
 def pressure_color(pressure, max_pressure):
@@ -29,6 +29,7 @@ def visualize(sim: SPH2D):
     screen_size = (int(sim.bounds[0] * scale), int(sim.bounds[1] * scale))
     screen = pygame.display.set_mode(screen_size)
     clock = pygame.time.Clock()
+    font = pygame.font.Font(None, 30)
     running = True
 
     sim.step()
@@ -40,23 +41,47 @@ def visualize(sim: SPH2D):
         screen.fill((255, 255, 255))
 
         for i in range(sim.positions.shape[0]):
-            pos = sim.positions[i] * scale
-            color = pressure_color(sim.pressures[i], 10000)
+            pos = np.astype(sim.positions[i] * scale, int)
+            #color = pressure_color(sim.pressures[i], 80000)
+            color = BLUE
 
             pygame.draw.circle(screen, color, pos, 3)
             #pygame.draw.circle(screen, outline_color, pos, int(sim.kernel_radius * scale), 1)
 
-        sim.step()
+        text = font.render(f"FPS: {int(clock.get_fps())}", True, (0, 0, 0))
+        screen.blit(text, (10, 10))
+
+        for i in range(8):
+            sim.step()
+        
         pygame.display.flip()
-        #clock.tick(60)
+        clock.tick()
 
     pygame.quit()
 
 
 if __name__ == "__main__":
-    sim = SPH2D(particle_spacing=0.008, smooth_factor=2, dt=0.002, stiffness=20, viscosity=0.2)
-    for x in np.linspace(0.1, 0.4, 37):
-        for y in np.linspace(0.4, 0.7, 37):
-            sim.add_particle(np.array([x, y]) + np.random.uniform(-0.001, 0.001, 2))
+    sim = SPH2D(
+        particle_spacing=0.005,
+        smooth_factor=2,
+        dt=0.001,
+        stiffness=40,
+        viscosity=0.1,
+        wall_viscosity=0
+    )
+
+    #for x in np.linspace(0.1, 0.4, 36):
+    #    for y in np.linspace(0.4, 0.7, 36):
+    #        sim.add_particle(np.array([x, y]) + np.random.uniform(-0.001, 0.001, 2))
+
+    dx = sim.particle_spacing
+
+    xs = np.arange(0.05, 0.3, dx)
+    ys = np.arange(0.2, 0.65, dx)
+    X, Y = np.meshgrid(xs, ys, indexing="xy")
+
+    positions = np.column_stack((X.ravel(), Y.ravel()))
+    positions += np.random.uniform(-0.001, 0.001, (positions.shape[0], 2))
+    sim.add_particles(positions)
 
     visualize(sim)

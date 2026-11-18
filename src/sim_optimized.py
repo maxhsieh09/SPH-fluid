@@ -184,6 +184,30 @@ class SPH2D:
 
         #self.update_grid()
 
+    def add_particles(self, positions, velocities=None):
+        positions = np.asarray(positions, dtype=np.float32).reshape(-1, 2)
+
+        n = len(positions)
+
+        if velocities is None:
+            velocities = np.zeros_like(positions)
+        else:
+            velocities = np.asarray(velocities, dtype=np.float32).reshape(-1, 2)
+
+        if len(velocities) != n:
+            raise ValueError("Velocity count must match particle count")
+
+        self.positions = np.concatenate((self.positions, positions), axis=0)
+
+        self.velocities = np.concatenate((self.velocities, velocities), axis=0)
+
+        self.densities = np.concatenate((
+            self.densities,
+            np.full(n, self.target_density, dtype=np.float32)
+        ))
+
+        self.pressures = np.concatenate((self.pressures, np.zeros(n, dtype=np.float32)))
+
     def create_boundary_particles(self):
         dx = self.particle_spacing
         width, height = self.bounds
